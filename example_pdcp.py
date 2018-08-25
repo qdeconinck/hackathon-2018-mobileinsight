@@ -130,7 +130,23 @@ class DumpAnalyzer(Analyzer):
 
     def __msg_callback(self, msg):
         if msg.type_id == "LTE_PDCP_DL_Cipher_Data_PDU":
-            print "PDCP DL"
+            print
+            "PDCP DL"
+            log_item = msg.data.decode()
+            if 'Subpackets' in log_item and len(log_item['Subpackets']) > 0:
+                subPkt = log_item['Subpackets'][0]
+                listPDU = subPkt['RLCDL PDUs']
+                for pduItem in listPDU:
+                    if pduItem['PDU TYPE'] == 'RLCDL DATA':
+                        sn = int(pduItem['SN'])
+                        fn = int(pduItem['sys_fn'])
+                        sfn = int(pduItem['sub_fn'])
+                        hdr_len = int(pduItem['logged_bytes'])  # rlc_pdu_size = pdcp_pdu_size + rlc_hdr_len
+                        sdu_size = int(pduItem['pdu_bytes']) - hdr_len
+                        self.dl_pkt.append([log_item['timestamp'], fn * 10 + sfn, sdu_size])
+        elif msg.type_id == "LTE_PDCP_UL_Cipher_Data_PDU":
+            print
+            "PDCP UL"
             log_item = msg.data.decode()
             if 'Subpackets' in log_item and len(log_item['Subpackets']) > 0:
                 subPkt = log_item['Subpackets'][0]
@@ -138,16 +154,17 @@ class DumpAnalyzer(Analyzer):
                 for pduItem in listPDU:
                     if pduItem['PDU TYPE'] == 'RLCUL DATA':
                         sn = int(pduItem['SN'])
-                        sys_fn = int(pduItem['sys_fn'])
-                        sub_fn = int(pduItem['sub_fn'])
+                        fn = int(pduItem['sys_fn'])
+                        sfn = int(pduItem['sub_fn'])
                         hdr_len = int(pduItem['logged_bytes'])  # rlc_pdu_size = pdcp_pdu_size + rlc_hdr_len
                         sdu_size = int(pduItem['pdu_bytes']) - hdr_len
-        elif msg.type_id == "LTE_PDCP_UL_Cipher_Data_PDU":
-            print "PDCP UL"
+                        self.ul_pkt.append([log_item['timestamp'], fn * 10 + sfn, sdu_size])
         elif msg.type_id == "LTE_RLC_DL_AM_All_PDU":
-            print "RLC DL"
+            print
+            "RLC DL"
         elif msg.type_id == "LTE_RLC_UL_AM_All_PDU":
-            print "RLC UL"
+            print
+            "RLC UL"
 
 
             # s = msg.data.decode_xml().replace("\n", "")
