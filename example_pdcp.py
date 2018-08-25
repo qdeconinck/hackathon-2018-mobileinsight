@@ -2,6 +2,8 @@
 # Filename: offline-analysis-example.py
 import os
 import sys
+
+from datetime import timedelta
  
 """
 Offline analysis by replaying logs
@@ -19,6 +21,9 @@ class DumpAnalyzer(Analyzer):
  
         self.add_source_callback(self.__msg_callback)
         self.mi2log = ""
+        self.ul_pkt = []
+        self.dl_pkt = []
+        self.last_sfn = []
  
     def close(self):
         print "End"
@@ -61,8 +66,8 @@ class DumpAnalyzer(Analyzer):
  
         # source.enable_log("LTE_RLC_UL_Config_Log_Packet")
         # source.enable_log("LTE_RLC_DL_Config_Log_Packet")
-        # source.enable_log("LTE_RLC_UL_AM_All_PDU")
-        # source.enable_log("LTE_RLC_DL_AM_All_PDU")
+        source.enable_log("LTE_RLC_UL_AM_All_PDU")
+        source.enable_log("LTE_RLC_DL_AM_All_PDU")
         # source.enable_log("LTE_RLC_UL_Stats")
         # source.enable_log("LTE_RLC_DL_Stats")
  
@@ -129,12 +134,105 @@ class DumpAnalyzer(Analyzer):
  
  
     def __msg_callback(self,msg):
-        s = msg.data.decode_xml().replace("\n", "")
-        print minidom.parseString(s).toprettyxml(" ")
-        # if "Unsupported" in s or "unsupported" in s or "(MI)Unknown" in s:
-        #     print "Unsupported message or unknown message field appears.\n"
-        #     print minidom.parseString(s).toprettyxml(" ")
-        #     print str(self.mi2log) + "\n"
+        if msg.type_id == "LTE_PDCP_DL_Cipher_Data_PDU":
+            log_item = msg.data.decode()
+            if 'Subpackets' in log_item and len(log_item['Subpackets']) > 0:
+                subPkt = log_item['Subpackets'][0]
+                listPDU = subPkt['PDCPDL CIPH DATA']
+                for pduItem in listPDU:
+                    sn = int(pduItem['SN'])
+                    sys_fn = int(pduItem['Sys FN'])
+                    sub_fn = int(pduItem['Sub FN'])
+                    # hdr_len = int(pduItem['logged_bytes'])  # rlc_pdu_size = pdcp_pdu_size + rlc_hdr_len
+                    sdu_size = int(pduItem['PDU Size']) #  - hdr_len
+                    tot_fn = 10 * sys_fn + sub_fn
+                    timestamp = log_item['timestamp'] # Datetime
+                    if sdu_size > 1000:
+                        if len(self.last_sfn) < 16:
+                            self.last_sfn.append(tot_fn)
+                        else:
+                            self.last_sfn.pop()
+                            self.last_sfn.append(tot_fn)
+
+                    if 68 < sdu_size < 100:
+                        last_ts = self.last_sfn[0] if len(self.last_sfn) > 0 else tot_fn
+                        self.dl_pkt.append([sdu_size, tot_fn, timestamp, last_ts, tot_fn - last_ts])
+                        self.last_sfn = []
+
+                    print sn, sys_fn, sub_fn, sdu_size
+
+        elif msg.type_id == "LTE_PDCP_UL_Cipher_Data_PDU":
+            log_item = msg.data.decode()
+            if 'Subpackets' in log_item and len(log_item['Subpackets']) > 0:
+                subPkt = log_item['Subpackets'][0]
+                listPDU = subPkt['PDCPUL CIPH DATA']
+                for pduItem in listPDU:
+                    sn = int(pduItem['SN'])
+                    sys_fn = int(pduItem['Sys FN'])
+                    sub_fn = int(pduItem['Sub FN'])
+                    # hdr_len = int(pduItem['logged_bytes'])  # rlc_pdu_size = pdcp_pdu_size + rlc_hdr_len
+                    sdu_size = int(pduItem['PDU Size']) #  - hdr_len
+                    
+                    timestamp = log_item['timestamp'] # Datetime
+                    print sn, sys_fn, sub_fn, sdu_size, timestamp
+
+                    if 68 < sdu_size < 100:
+                        self.ul_pkt.append([sdu_size, sys_fn * 10 + sub_fn, timestamp])
+
+        elif msg.type_id == "LTE_RLC_UL_AM_All_PDU":
+            print "oko"
+
+        elif msg.type_id == "LTE_RLC_DL_AM_All_PDU":
+            print "kko"
+        
+    def post_process(self):
+        print len(self.ul_pkt)
+        print len(self.dl_pkt)
+        ul_pointer = 0
+        dl_pointer = 0
+        joint_delay = []
+
+        while ul_pointer < len(self.ul_pkt) and dl_pointer < len(self.dl_pkt):
+            ul_ts = self.ul_pkt[ul_pointer][2]
+            dl_ts = self.dl_pkt[dl_pointer][2]
+
+            ul_sfn = self.ul_pkt[ul_pointer][1]
+            dl_sfn = self.dl_pkt[dl_pointer][1]
+
+            if dl_ts - ul_ts > timedelta(seconds=1):
+                ul_pointer += 1
+                continue
+            elif ul_ts - dl_ts > timedelta(seconds=1):
+                dl_pointer += 1
+                continue
+
+            if ul_sfn - dl_sfn > 500 or -9740 < ul_sfn - dl_sfn < -8000:
+                dl_pointer += 1
+                print("JHojoj")
+                continue
+            elif dl_sfn - ul_sfn > 500 or -9740 < dl_sfn - ul_sfn < -8000:
+                ul_pointer += 1
+                print("OP")
+                continue
+
+            ul_size = self.ul_pkt[ul_pointer][0]
+            dl_size = self.dl_pkt[dl_pointer][0]
+            print(ul_size, dl_size)
+            if ul_size == dl_size:
+                joint_delay.append(self.ul_pkt[ul_pointer] + self.dl_pkt[dl_pointer])
+                dl_pointer += 1
+                ul_pointer += 1
+            elif (dl_size < ul_size and not (dl_size < 75 and ul_size > 94)) or (ul_size < 75 and dl_size > 94 and (ul_sfn > dl_sfn or ul_sfn - dl_sfn < -8000)):
+                dl_pointer += 1
+            else:
+                ul_pointer += 1
+
+        print "ul_size, ul_fn_sfn, ul_timestamp, dl_size, dl_fn_sfn, dl_timestamp, first_dl_fn_sfn, dl_trans_delay, e2e_delay"
+        for i in joint_delay:
+            if 0 < i[4] - i[1] < 600:
+                print ','.join(map(str, i + [i[4] - i[1]]))
+
+
  
 if __name__ == "__main__":
  
@@ -151,3 +249,5 @@ if __name__ == "__main__":
  
     # Start the monitoring
     src.run()
+
+    dumpAnalyzer.post_process()
